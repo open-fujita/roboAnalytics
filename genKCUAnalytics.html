@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ロボット同時実行数・KCUWAIT・待ち時間 ヒートマップ (5分刻み)</title>
+    <title>RPA KCU Wait率・同時実行数 ヒートマップ (5分刻み)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
@@ -19,14 +19,15 @@
             text-align: left;
             padding: 8px;
             font: 12px sans-serif;
-            background: rgba(230, 230, 250, 0.95);
-            border: 1px solid #aaa;
+            background: rgba(240, 240, 246, 0.95); /* 少し明るい背景 */
+            border: 1px solid #ccc;
             border-radius: 8px;
             pointer-events: none;
             opacity: 0;
             color: #333;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.15);
             z-index: 10;
+            max-width: 300px; /* ツールチップの最大幅 */
         }
         #heatmap-container {
             overflow-x: auto; 
@@ -94,21 +95,22 @@
         #heatmap-svg .x-axis text { 
             font-size: 0.7rem;
         }
-        .cell-with-queue-time {
-            stroke: #4f46e5; /* 濃い青紫色 (Indigo) */
-            stroke-width: 2px; /* 少し太く */
-            stroke-opacity: 0.9;
+        .cell-high-concurrency { /* 同時実行数が多い場合の枠線 */
+            stroke: #06b6d4; /* Cyan */
+            stroke-width: 2.5px;
+            stroke-opacity: 0.85;
+            stroke-dasharray: 3 1; /* 点線風 */
         }
     </style>
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
-    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">ロボット同時実行数・KCUWAIT・待ち時間 ヒートマップ (5分刻み)</h1>
+    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">RPA KCU Wait率 ・ 同時実行数 ヒートマップ (5分刻み)</h1>
 
     <div class="controls mb-6">
         <label for="robot-select" class="text-sm font-medium text-gray-700">ロボットを選択:</label>
         <select id="robot-select" class="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
-            <option value="all">全ロボット (スロット内総実行回数)</option>
+            <option value="all">全ロボット (スロット内集計)</option>
         </select>
     </div>
     
@@ -138,41 +140,30 @@
         let allRawData = [];
         let robotNamesList = [];
 
-        const KCUWAIT_HIGH_THRESHOLD = 5000000; // 総KCUWAITがこの値を超えると色を濃くする (調整可能)
+        const CONCURRENCY_THRESHOLD = 5; // この実行回数以上で枠線表示
 
-        const baseColors = {
-            good: "#66c2a5",    // 良好 (0-4)
-            caution: "#fdae61", // 注意 (5-10)
-            danger: "#d95f02",  // 危険 (>10) - 少し濃い赤に変更
-            noData: "#eeeeee"
-        };
-        // 濃い色の定義 (d3.color().darker() を使用)
-        const darkerColors = {
-            caution: d3.color(baseColors.caution).darker(0.6).toString(),
-            danger: d3.color(baseColors.danger).darker(0.6).toString()
+        const kcuWaitRateColors = {
+            good: "#66c2a5",    // 良好 (0-5%)
+            caution: "#fdae61", // 注意 (>5-15%)
+            danger: "#d95f02",  // 危険 (>15%)
+            noData: "#eeeeee"   // データなし/計算不可
         };
         
-        function getCategoryLevelByCount(count) {
-            if (count > 10) return 3; 
-            if (count >= 5 && count <= 10) return 2; 
-            if (count >= 0 && count <= 4) return 1; 
-            return 0; 
+        function getKcuWaitRateCategoryLevel(rate) {
+            if (isNaN(rate) || rate < 0) return 0; // データなし or 計算不可
+            if (rate > 0.15) return 3; // 危険 (>15%)
+            if (rate > 0.05) return 2; // 注意 (>5%)
+            return 1; // 良好 (0-5%)
         }
 
-        function getCategoryColorByLevelAndKcuwait(level, totalKcuwait) {
-            if (level === 3) { // 危険
-                return totalKcuwait > KCUWAIT_HIGH_THRESHOLD ? darkerColors.danger : baseColors.danger;
-            }
-            if (level === 2) { // 注意
-                return totalKcuwait > KCUWAIT_HIGH_THRESHOLD ? darkerColors.caution : baseColors.caution;
-            }
-            if (level === 1) { // 良好
-                return baseColors.good;
-            }
-            return baseColors.noData; // level 0 or other
+        function getKcuWaitRateCategoryColor(level) {
+            if (level === 3) return kcuWaitRateColors.danger;
+            if (level === 2) return kcuWaitRateColors.caution;
+            if (level === 1) return kcuWaitRateColors.good;
+            return kcuWaitRateColors.noData;
         }
 
-        function getCategoryNameByLevel(level) {
+        function getKcuWaitRateCategoryName(level) {
              if (level === 3) return "危険";
              if (level === 2) return "注意";
              if (level === 1) return "良好";
@@ -220,7 +211,8 @@
                     }
                     return {
                         id: d.ID, date: parsedDate, time_slot: timeSlot, robotName: d.ROBOTNAME,
-                        kcuwait_raw: +d.KCUWAIT || 0, // KCUWAIT を数値として読み込み
+                        kcuwait: +d.KCUWAIT || 0,
+                        executionTime: +d.EXECUTIONTIME || 0,
                         queueTime: +d.QUEUETIME || 0 
                     };
                 }).filter(d => d.date && d.time_slot !== null);
@@ -241,13 +233,13 @@
                          if(!allOptionFound && selectElement.firstChild){ 
                             const defaultOption = document.createElement('option');
                             defaultOption.value = "all";
-                            defaultOption.textContent = "全ロボット (スロット内総実行回数)";
+                            defaultOption.textContent = "全ロボット (スロット内集計)";
                             selectElement.insertBefore(defaultOption, selectElement.firstChild);
                          }
                          break; 
                      }
                 }
-                selectElement.options[0].textContent = "全ロボット (スロット内総実行回数)";
+                selectElement.options[0].textContent = "全ロボット (スロット内集計)";
 
                 robotNamesList = ["all", ...new Set(allRawData.map(d => d.robotName).filter(name => name).sort())];
                 
@@ -288,8 +280,22 @@
             groupedByDateTimeSlot.forEach((timeSlotMap, date) => {
                 timeSlotMap.forEach((valuesInCell, time_slot) => {
                     const executionCount = valuesInCell.length;
-                    const categoryLevel = getCategoryLevelByCount(executionCount);
-                    const totalKcuwaitInCell = d3.sum(valuesInCell, v => v.kcuwait_raw);
+                    const totalKcuwait = d3.sum(valuesInCell, v => v.kcuwait);
+                    const totalExecutionTime = d3.sum(valuesInCell, v => v.executionTime);
+                    
+                    let kcuWaitRate = NaN;
+                    if ((totalExecutionTime + totalKcuwait) > 0) {
+                        kcuWaitRate = totalKcuwait / (totalExecutionTime + totalKcuwait);
+                    } else if (totalKcuwait > 0 && (totalExecutionTime + totalKcuwait) === 0) { 
+                        // 実行時間0でKCUWAITのみ発生は考えにくいが、念のためInfinity扱い
+                        kcuWaitRate = Infinity;
+                    } else if (totalKcuwait === 0 && (totalExecutionTime + totalKcuwait) === 0 && executionCount > 0) {
+                        // KCUWAITも実行時間も0だが実行記録がある場合はレート0
+                        kcuWaitRate = 0;
+                    }
+
+
+                    const categoryLevel = getKcuWaitRateCategoryLevel(kcuWaitRate);
                     
                     const queueTimeRecords = valuesInCell.filter(v => v.queueTime > 0);
                     const hasQueueTime = queueTimeRecords.length > 0;
@@ -299,9 +305,11 @@
                         date: date, 
                         time_slot: time_slot, 
                         execution_count: executionCount,
-                        category_level: categoryLevel, // 実行数に基づくカテゴリレベル
-                        category_name: getCategoryNameByLevel(categoryLevel),
-                        total_kcuwait_in_cell: totalKcuwaitInCell,
+                        kcu_wait_rate: kcuWaitRate,
+                        category_level: categoryLevel,
+                        category_name: getKcuWaitRateCategoryName(categoryLevel),
+                        total_kcuwait_in_cell: totalKcuwait,
+                        total_execution_time_in_cell: totalExecutionTime,
                         has_queue_time: hasQueueTime,
                         queue_time_record_count: queueTimeRecords.length,
                         total_queue_time_ms: totalQueueTime
@@ -350,88 +358,92 @@
                 .data(heatmapCellData, d => `${d.date}:${d.time_slot}`)
                 .enter()
                 .append("rect")
-                .attr("class", d => d.has_queue_time ? "heatmap-cell cell-with-queue-time" : "heatmap-cell")
+                .attr("class", d => {
+                    let classes = "heatmap-cell";
+                    if (d.execution_count >= CONCURRENCY_THRESHOLD) {
+                        classes += " cell-high-concurrency";
+                    }
+                    return classes;
+                })
                 .attr("x", d => xScale(d.time_slot))
                 .attr("y", d => yScale(d.date))
                 .attr("width", xScale.bandwidth())
                 .attr("height", yScale.bandwidth())
-                .style("fill", d => getCategoryColorByLevelAndKcuwait(d.category_level, d.total_kcuwait_in_cell))
+                .style("fill", d => getKcuWaitRateCategoryColor(d.category_level))
                 .on("mouseover", function(event, d) {
                     tooltip.transition().duration(200).style("opacity", 1);
                     const timeSlotEnd = getEndTimeOfSlot(d.time_slot);
-                    let queueInfo = `<strong>待ち時間発生:</strong> ${d.has_queue_time ? 'あり' : 'なし'}<br/>`;
+                    let queueInfo = `<strong>QUEUETIME発生:</strong> ${d.has_queue_time ? 'あり' : 'なし'}<br/>`;
                     if (d.has_queue_time) {
-                        queueInfo += `<strong>　待ちレコード数:</strong> ${d.queue_time_record_count}<br/>
-                                      <strong>　総待ち時間:</strong> ${d.total_queue_time_ms.toLocaleString()} ms<br/>`;
+                        queueInfo += `<strong>　QUEUETIME発生レコード数:</strong> ${d.queue_time_record_count}<br/>
+                                      <strong>　総QUEUETIME:</strong> ${d.total_queue_time_ms.toLocaleString()} ms<br/>`;
                     }
 
                     tooltip.html(`
                         <strong>日付:</strong> ${d.date}<br/>
                         <strong>時間帯:</strong> ${d.time_slot} - ${timeSlotEnd}<br/>
                         <strong>ロボット:</strong> ${selectedRobot === "all" ? "全ロボット" : selectedRobot}<br/>
-                        <strong>実行回数:</strong> ${d.execution_count}<br/>
-                        <strong>分類 (実行回数):</strong> ${d.category_name}<br/>
+                        <strong>KCU Wait率:</strong> ${isNaN(d.kcu_wait_rate) ? "N/A" : (d.kcu_wait_rate * 100).toFixed(1) + "%"}<br/>
+                        <strong>分類 (KCU Wait率):</strong> ${d.category_name}<br/>
                         <strong>総KCUWAIT (スロット内):</strong> ${d.total_kcuwait_in_cell.toLocaleString()} ms<br/>
+                        <strong>総実行時間 (スロット内):</strong> ${d.total_execution_time_in_cell.toLocaleString()} ms<br/>
+                        <strong>同時実行レコード数:</strong> ${d.execution_count}<br/>
                         ${queueInfo}
                     `)
                     .style("left", (event.pageX + 15) + "px")
                     .style("top", (event.pageY - 28) + "px");
                     
-                    d3.select(this).style("stroke", d.has_queue_time ? "#312e81" : "black") // 待ち時間があれば濃い紫、なければ黒
-                                   .style("stroke-width", d.has_queue_time ? "2.5px" : "0.5px") // 強調
-                                   .style("stroke-opacity", 1);
+                    // マウスオーバー時の枠線スタイル
+                    d3.select(this)
+                        .style("stroke", "black")
+                        .style("stroke-width", "1px")
+                        .style("stroke-opacity", 1);
                 })
                 .on("mouseout", function(event, d) {
                     tooltip.transition().duration(500).style("opacity", 0);
-                    if (!d.has_queue_time) {
-                        d3.select(this).style("stroke", "none");
+                    // 元の枠線スタイルに戻す (同時実行数が多い場合の枠線)
+                    if (d.execution_count >= CONCURRENCY_THRESHOLD) {
+                         d3.select(this)
+                            .style("stroke", "#06b6d4")
+                            .style("stroke-width", "2.5px")
+                            .style("stroke-opacity", 0.85);
                     } else {
-                        d3.select(this).style("stroke", "#4f46e5").style("stroke-width", "2px").style("stroke-opacity", 0.9); // 元のスタイルに戻す
+                        d3.select(this).style("stroke", "none");
                     }
                 });
             
-            // 凡例の更新
             const legendData = [
-                { color: baseColors.good, text: "良好 (0-4 回)" },
-                { color: baseColors.caution, text: "注意 (5-10 回)" },
-                { color: darkerColors.caution, text: "注意 (5-10 回) & 高KCUWAIT" },
-                { color: baseColors.danger, text: "危険 (>10 回)" },
-                { color: darkerColors.danger, text: "危険 (>10 回) & 高KCUWAIT" },
+                { level: 1, text: "良好 (KCU Wait率 0-5%)" },
+                { level: 2, text: "注意 (KCU Wait率 >5-15%)" },
+                { level: 3, text: "危険 (KCU Wait率 >15%)" },
             ];
-            const legendQueueTime = { color: "none", strokeColor: "#4f46e5", strokeWidth: "2px", text: "待ち時間発生セル (枠線)" };
+            const legendConcurrency = { strokeColor: "#06b6d4", strokeWidth: "2.5px", strokeDasharray: "3 1", text: `同時実行 ${CONCURRENCY_THRESHOLD}回以上 (枠線)` };
 
 
-            legendSvgContainer.append("div").attr("class", "legend-title").text("凡例 (5分間の実行回数とKCUWAIT)");
+            legendSvgContainer.append("div").attr("class", "legend-title").text("凡例");
             const legendSvgInstance = legendSvgContainer.append("svg")
-                .attr("height", (20 + 5) * (legendData.length + 2)) // 待ち時間凡例とタイトル分
+                .attr("height", (20 + 8) * (legendData.length + 2)) // 凡例間のスペースを少し広げる
                 .attr("width", 400); 
             
             const legendItems = legendSvgInstance.selectAll(".legend-item-color")
                 .data(legendData)
                 .enter().append("g")
                 .attr("class", "legend-item")
-                .attr("transform", (d, i) => `translate(10, ${i * (20 + 5)})`);
-            legendItems.append("rect").attr("width", 20).attr("height", 20).style("fill", d => d.color);
+                .attr("transform", (d, i) => `translate(10, ${i * (20 + 8)})`);
+            legendItems.append("rect").attr("width", 20).attr("height", 20).style("fill", d => getKcuWaitRateCategoryColor(d.level));
             legendItems.append("text").attr("x", 20 + 5).attr("y", 10).text(d => d.text)
                 .attr("class", "legend-item-text").attr("dominant-baseline", "middle");
 
-            const queueTimeLegendItem = legendSvgInstance.append("g")
+            const concurrencyLegendItem = legendSvgInstance.append("g")
                 .attr("class", "legend-item")
-                .attr("transform", `translate(10, ${legendData.length * (20 + 5) + 5})`);
-            queueTimeLegendItem.append("rect").attr("width", 20).attr("height", 20)
+                .attr("transform", `translate(10, ${legendData.length * (20 + 8) + 5})`);
+            concurrencyLegendItem.append("rect").attr("width", 20).attr("height", 20)
                 .style("fill", "none")
-                .style("stroke", legendQueueTime.strokeColor)
-                .style("stroke-width", legendQueueTime.strokeWidth);
-            queueTimeLegendItem.append("text").attr("x", 20 + 5).attr("y", 10).text(legendQueueTime.text)
+                .style("stroke", legendConcurrency.strokeColor)
+                .style("stroke-width", legendConcurrency.strokeWidth)
+                .style("stroke-dasharray", legendConcurrency.strokeDasharray);
+            concurrencyLegendItem.append("text").attr("x", 20 + 5).attr("y", 10).text(legendConcurrency.text)
                 .attr("class", "legend-item-text").attr("dominant-baseline", "middle");
-
-            legendSvgInstance.append("text")
-                .attr("x", 10)
-                .attr("y", (legendData.length + 1) * (20 + 5) + 15)
-                .attr("class", "legend-item-text")
-                .style("font-size", "0.7rem")
-                .text(`※高KCUWAITの閾値: ${KCUWAIT_HIGH_THRESHOLD.toLocaleString()} ms`);
-
         }
     </script>
 </body>
