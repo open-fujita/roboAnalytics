@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ロボット別 同時実行数 ヒートマップ (5分刻み)</title>
+    <title>ロボット別 同時実行数・待ち時間発生 ヒートマップ (5分刻み)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
@@ -94,11 +94,16 @@
         #heatmap-svg .x-axis text { 
             font-size: 0.7rem;
         }
+        .cell-with-queue-time { /* 待ち時間発生セルの枠線スタイル */
+            stroke: #6a0dad; /* 青紫色 */
+            stroke-width: 1.5px;
+            stroke-opacity: 0.8;
+        }
     </style>
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
-    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">ロボット別 同時実行数 ヒートマップ (5分刻み)</h1>
+    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">ロボット別 同時実行数・待ち時間発生 ヒートマップ (5分刻み)</h1>
 
     <div class="controls mb-6">
         <label for="robot-select" class="text-sm font-medium text-gray-700">ロボットを選択:</label>
@@ -130,29 +135,28 @@
         const tooltip = d3.select(".tooltip");
         const legendSvgContainer = d3.select("#legend-container");
 
-        let allRawData = []; // CSVパース後の生データ
+        let allRawData = [];
         let robotNamesList = [];
 
         const colors = {
-            good: "#66c2a5",    // 良好 (0-4)
-            caution: "#fdae61", // 注意 (5-10)
-            danger: "#d73027",  // 危険 (>10)
-            noData: "#eeeeee"   // データなし (実行0回)
+            good: "#66c2a5",
+            caution: "#fdae61",
+            danger: "#d73027",
+            noData: "#eeeeee"
         };
         
-        // 実行回数に基づいてカテゴリレベルを返す
         function getCategoryLevelByCount(count) {
-            if (count > 10) return 3; // 危険
-            if (count >= 5 && count <= 10) return 2; // 注意
-            if (count >= 0 && count <= 4) return 1; // 良好 (0も良好扱い)
-            return 0; // 通常はここに来ないが、念のため
+            if (count > 10) return 3; 
+            if (count >= 5 && count <= 10) return 2; 
+            if (count >= 0 && count <= 4) return 1; 
+            return 0; 
         }
 
         function getCategoryColorByLevel(level) {
             if (level === 3) return colors.danger;
             if (level === 2) return colors.caution;
             if (level === 1) return colors.good;
-            return colors.noData; // level 0 or other
+            return colors.noData;
         }
 
         function getCategoryNameByLevel(level) {
@@ -182,7 +186,7 @@
             try {
                 const data = d3.csvParse(csvDataString);
                 
-                allRawData = data.map(d => { // 変数名を allRawData に変更
+                allRawData = data.map(d => {
                     const startTime = d.STARTTIME;
                     let parsedDate = null, parsedHour = null, parsedMinute = null, timeSlot = null;
 
@@ -201,8 +205,9 @@
                             }
                         }
                     }
-                    return { // KCU関連の計算は削除し、必要な情報のみ保持
-                        id: d.ID, date: parsedDate, time_slot: timeSlot, robotName: d.ROBOTNAME
+                    return {
+                        id: d.ID, date: parsedDate, time_slot: timeSlot, robotName: d.ROBOTNAME,
+                        queueTime: +d.QUEUETIME || 0 // QUEUETIME を数値として読み込み
                     };
                 }).filter(d => d.date && d.time_slot !== null);
 
@@ -222,13 +227,13 @@
                          if(!allOptionFound && selectElement.firstChild){ 
                             const defaultOption = document.createElement('option');
                             defaultOption.value = "all";
-                            defaultOption.textContent = "全ロボット (スロット内総実行回数)"; // テキスト更新
+                            defaultOption.textContent = "全ロボット (スロット内総実行回数)";
                             selectElement.insertBefore(defaultOption, selectElement.firstChild);
                          }
                          break; 
                      }
                 }
-                selectElement.options[0].textContent = "全ロボット (スロット内総実行回数)"; // ドロップダウンのテキストを更新
+                selectElement.options[0].textContent = "全ロボット (スロット内総実行回数)";
 
                 robotNamesList = ["all", ...new Set(allRawData.map(d => d.robotName).filter(name => name).sort())];
                 
@@ -270,14 +275,19 @@
                 timeSlotMap.forEach((valuesInCell, time_slot) => {
                     const executionCount = valuesInCell.length;
                     const categoryLevel = getCategoryLevelByCount(executionCount);
+                    const queueTimeRecords = valuesInCell.filter(v => v.queueTime > 0);
+                    const hasQueueTime = queueTimeRecords.length > 0;
+                    const totalQueueTime = d3.sum(queueTimeRecords, v => v.queueTime);
                     
                     heatmapCellData.push({
                         date: date, 
                         time_slot: time_slot, 
                         execution_count: executionCount,
                         category_level: categoryLevel,
-                        category_name: getCategoryNameByLevel(categoryLevel)
-                        // KCUWAIT関連のツールチップ情報は削除 (必要なら再度追加)
+                        category_name: getCategoryNameByLevel(categoryLevel),
+                        has_queue_time: hasQueueTime,
+                        queue_time_record_count: queueTimeRecords.length,
+                        total_queue_time_ms: totalQueueTime
                     });
                 });
             });
@@ -323,7 +333,7 @@
                 .data(heatmapCellData, d => `${d.date}:${d.time_slot}`)
                 .enter()
                 .append("rect")
-                .attr("class", "heatmap-cell")
+                .attr("class", d => d.has_queue_time ? "heatmap-cell cell-with-queue-time" : "heatmap-cell")
                 .attr("x", d => xScale(d.time_slot))
                 .attr("y", d => yScale(d.date))
                 .attr("width", xScale.bandwidth())
@@ -332,41 +342,79 @@
                 .on("mouseover", function(event, d) {
                     tooltip.transition().duration(200).style("opacity", 1);
                     const timeSlotEnd = getEndTimeOfSlot(d.time_slot);
+                    let queueInfo = '';
+                    if (d.has_queue_time) {
+                        queueInfo = `<strong>待ち時間発生:</strong> あり<br/>
+                                     <strong>待ちレコード数:</strong> ${d.queue_time_record_count}<br/>
+                                     <strong>総待ち時間:</strong> ${d.total_queue_time_ms.toLocaleString()} ms<br/>`;
+                    } else {
+                        queueInfo = `<strong>待ち時間発生:</strong> なし<br/>`;
+                    }
+
                     tooltip.html(`
                         <strong>日付:</strong> ${d.date}<br/>
                         <strong>時間帯:</strong> ${d.time_slot} - ${timeSlotEnd}<br/>
                         <strong>ロボット:</strong> ${selectedRobot === "all" ? "全ロボット" : selectedRobot}<br/>
                         <strong>実行回数:</strong> ${d.execution_count}<br/>
-                        <strong>分類:</strong> ${d.category_name}
+                        <strong>分類:</strong> ${d.category_name}<br/>
+                        ${queueInfo}
                     `)
                     .style("left", (event.pageX + 15) + "px")
                     .style("top", (event.pageY - 28) + "px");
-                    d3.select(this).style("stroke", "black").style("stroke-width", 0.5);
+                    
+                    // マウスオーバー時の枠線は、待ち時間有無の枠線と区別するため、少し異なるスタイルにするか、
+                    // もしくは待ち時間枠線がないセルにのみ適用する
+                    if (!d.has_queue_time) {
+                        d3.select(this).style("stroke", "black").style("stroke-width", 0.5);
+                    } else {
+                         d3.select(this).style("stroke-opacity", 1); // 既存の枠線を強調
+                    }
                 })
-                .on("mouseout", function() {
+                .on("mouseout", function(event, d) {
                     tooltip.transition().duration(500).style("opacity", 0);
-                    d3.select(this).style("stroke", "none");
+                    if (!d.has_queue_time) { // 待ち時間枠線がないセルのみ枠線を消す
+                        d3.select(this).style("stroke", "none");
+                    } else {
+                        d3.select(this).style("stroke-opacity", 0.8); // 既存の枠線の透明度を元に戻す
+                    }
                 });
 
             const legendData = [
                 { level: 1, text: "良好 (0 - 4 回)" },
                 { level: 2, text: "注意 (5 - 10 回)" },
-                { level: 3, text: "危険 (>10 回)" },
-                // { level: 0, text: "実行なし" } // 実行0回は良好(level 1)に含めるため、凡例からは削除も検討
+                { level: 3, text: "危険 (>10 回)" }
             ];
-             // 実行0回も良好に含めるため、凡例のテキストを調整
-            if (legendData.find(item => item.level === 1)) {
-                legendData.find(item => item.level === 1).text = "良好 (0 - 4 回)";
-            }
-
-
+            
             legendSvgContainer.append("div").attr("class", "legend-title").text("凡例 (5分間の実行回数)");
-            const legendSvgInstance = legendSvgContainer.append("svg").attr("height", (20 + 5) * legendData.length).attr("width", 300); // 幅調整
-            const legendItems = legendSvgInstance.selectAll(".legend-item").data(legendData).enter().append("g")
-                .attr("class", "legend-item").attr("transform", (d, i) => `translate(10, ${i * (20 + 5)})`);
+            const legendSvgInstance = legendSvgContainer.append("svg").attr("height", (20 + 5) * (legendData.length + 1) + 10).attr("width", 300); // 待ち時間凡例のため高さを調整
+            
+            const legendItems = legendSvgInstance.selectAll(".legend-item")
+                .data(legendData)
+                .enter().append("g")
+                .attr("class", "legend-item")
+                .attr("transform", (d, i) => `translate(10, ${i * (20 + 5)})`);
             legendItems.append("rect").attr("width", 20).attr("height", 20).style("fill", d => getCategoryColorByLevel(d.level));
             legendItems.append("text").attr("x", 20 + 5).attr("y", 20 / 2).text(d => d.text)
                 .attr("class", "legend-item-text").attr("dominant-baseline", "middle");
+
+            // 待ち時間発生の凡例を追加
+            const queueTimeLegend = legendSvgInstance.append("g")
+                .attr("class", "legend-item")
+                .attr("transform", `translate(10, ${legendData.length * (20 + 5) + 5})`); // 位置調整
+            
+            queueTimeLegend.append("rect")
+                .attr("width", 20)
+                .attr("height", 20)
+                .style("fill", "none") // 背景色はなし
+                .style("stroke", "#6a0dad") // 枠線の色
+                .style("stroke-width", "1.5px");
+            
+            queueTimeLegend.append("text")
+                .attr("x", 20 + 5)
+                .attr("y", 20 / 2)
+                .text("待ち時間発生セル")
+                .attr("class", "legend-item-text")
+                .attr("dominant-baseline", "middle");
         }
     </script>
 </body>
