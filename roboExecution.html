@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ロボット実行スケジュール (D3.js)</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Tailwind gray-100 */
+            color: #1f2937; /* Tailwind gray-800 */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            width: 95%;
+            max-width: 1600px; /* 最大幅を設定 */
+            margin: 20px auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .controls > div {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #csv-input-area {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #d1d5db; /* Tailwind gray-300 */
+            border-radius: 6px;
+            margin-bottom: 15px;
+            min-height: 100px;
+            font-family: monospace;
+        }
+        .gantt-chart-container {
+            width: 100%;
+            overflow-x: auto; /* SVGがはみ出す場合にスクロール */
+        }
+        .tooltip {
+            position: absolute;
+            background-color: rgba(31, 41, 55, 0.9); /* Tailwind gray-800 with opacity */
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.875rem; /* Tailwind text-sm */
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+            pointer-events: none;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            transform: translate(-50%, -110%); /* ツールチップがカーソル上に来るように調整 */
+        }
+        .tooltip p {
+            margin: 2px 0;
+        }
+        .axis path,
+        .axis line {
+            fill: none;
+            stroke: #9ca3af; /* Tailwind gray-400 */
+            shape-rendering: crispEdges;
+        }
+        .axis text {
+            font-size: 0.75rem; /* Tailwind text-xs */
+            fill: #4b5563; /* Tailwind gray-600 */
+        }
+        .grid .tick line {
+            stroke: #e5e7eb; /* Tailwind gray-200 */
+            stroke-opacity: 0.7;
+            shape-rendering: crispEdges;
+        }
+        .robot-label {
+            font-size: 0.875rem; /* Tailwind text-sm */
+            font-weight: 500; /* Tailwind font-medium */
+            fill: #374151; /* Tailwind gray-700 */
+        }
+        .task-bar {
+            cursor: pointer;
+            transition: opacity 0.2s ease-in-out;
+        }
+        .task-bar:hover {
+            opacity: 0.8;
+        }
+        .error-bar {
+            fill: #ef4444; /* Tailwind red-500 */
+        }
+        /* カラーパレット */
+        .color-0 { fill: #3b82f6; } /* blue-500 */
+        .color-1 { fill: #10b981; } /* green-500 */
+        .color-2 { fill: #f59e0b; } /* amber-500 */
+        .color-3 { fill: #8b5cf6; } /* violet-500 */
+        .color-4 { fill: #ec4899; } /* pink-500 */
+        .color-5 { fill: #6366f1; } /* indigo-500 */
+        .color-6 { fill: #14b8a6; } /* teal-500 */
+        .color-default { fill: #6b7280; } /* gray-500 */
+
+        .loader {
+            border: 4px solid #f3f4f6; /* Tailwind gray-100 */
+            border-top: 4px solid #3b82f6; /* Tailwind blue-500 */
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .chart-placeholder {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 300px;
+            color: #6b7280; /* Tailwind gray-500 */
+            border: 2px dashed #d1d5db; /* Tailwind gray-300 */
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">ロボット実行スケジュール (D3.js版)</h1>
+
+        <div>
+            <label for="csv-input-area" class="block text-sm font-medium text-gray-700 mb-1">CSVデータを以下に貼り付けてください:</label>
+            <textarea id="csv-input-area" rows="8" placeholder="ここにCSVデータを貼り付け..."></textarea>
+        </div>
+
+        <div class="controls">
+            <div>
+                <label for="date-select" class="text-sm font-medium text-gray-700">日付選択:</label>
+                <select id="date-select" class="block w-48 pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm"></select>
+            </div>
+            <button id="render-chart-button" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 shadow-sm">
+                チャート表示/更新
+            </button>
+        </div>
+
+        <div id="chart-loader" class="loader hidden"></div>
+        <div class="gantt-chart-container">
+            <svg id="gantt-chart"></svg>
+        </div>
+        <div id="chart-placeholder" class="chart-placeholder">
+            <p>CSVデータを入力し、「チャート表示/更新」ボタンを押してください。</p>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        // D3.js を使ったガントチャート描画ロジック
+        const margin = { top: 50, right: 50, bottom: 50, left: 200 }; // 左マージンを広げてロボット名を表示
+        const rowHeight = 40;
+        const barHeight = 30;
+        const barPadding = (rowHeight - barHeight) / 2;
+
+        // カラーパレット
+        const colors = d3.scaleOrdinal(d3.schemeCategory10);
+        const defaultColor = "#6b7280"; // Tailwind gray-500
+        const errorColor = "#ef4444"; // Tailwind red-500
+
+        const tooltip = d3.select("#tooltip");
+        const dateSelect = d3.select("#date-select");
+        const renderButton = d3.select("#render-chart-button");
+        const csvInputArea = d3.select("#csv-input-area");
+        const chartLoader = d3.select("#chart-loader");
+        const chartPlaceholder = d3.select("#chart-placeholder");
+
+        let allData = [];
+        let uniqueDates = [];
+
+        // 初期サンプルCSVデータをテキストエリアから削除
+        csvInputArea.property("value", "");
+
+
+        renderButton.on("click", function() {
+            const rawCsvData = csvInputArea.property("value");
+            if (!rawCsvData.trim()) {
+                alert("CSVデータを入力してください。");
+                return;
+            }
+            chartLoader.classed("hidden", false);
+            chartPlaceholder.classed("hidden", true);
+            d3.select("#gantt-chart").selectAll("*").remove(); // 既存のチャートをクリア
+
+            // CSVデータをパース
+            // d3.csvParseは非同期ではないため、直接使用
+            try {
+                // \\N を null または空文字列に置換 (パースエラーを避けるため)
+                const cleanedCsvData = rawCsvData.replace(/\\N/g, '');
+                allData = d3.csvParse(cleanedCsvData, (d) => {
+                    // データ型の変換と必要なフィールドの確認
+                    if (!d.STARTTIME || !d.ENDTIME || !d.ROBOTNAME || !d.PROJECTNAME) {
+                        // console.warn("Skipping row due to missing critical data:", d);
+                        return null; // 必須フィールドがない場合はスキップ
+                    }
+                    return {
+                        id: d.ID,
+                        robotName: d.ROBOTNAME,
+                        projectName: d.PROJECTNAME,
+                        startTime: new Date(d.STARTTIME),
+                        endTime: new Date(d.ENDTIME),
+                        errorCount: +d.ERRORCOUNT,
+                        executionTime: +d.EXECUTIONTIME,
+                        steps: +d.STEPS,
+                        details: `ロボット名: ${d.ROBOTNAME}\nプロジェクト名: ${d.PROJECTNAME}\n開始時刻: ${d.STARTTIME}\n終了時刻: ${d.ENDTIME}\nエラー数: ${d.ERRORCOUNT}\n実行時間: ${d.EXECUTIONTIME}ms\nステップ数: ${d.STEPS}`
+                    };
+                }).filter(d => d && d.startTime instanceof Date && !isNaN(d.startTime) && d.endTime instanceof Date && !isNaN(d.endTime) && d.endTime >= d.startTime); // 不正なデータをフィルタリング
+
+                if (allData.length === 0) {
+                    alert("有効なデータが見つかりませんでした。CSVの形式を確認してください。");
+                    chartLoader.classed("hidden", true);
+                    chartPlaceholder.classed("hidden", false).text("有効なデータが見つかりませんでした。");
+                    return;
+                }
+
+                uniqueDates = [...new Set(allData.map(d => d.startTime.toISOString().split('T')[0]))].sort();
+
+                dateSelect.selectAll("option").remove();
+                dateSelect.selectAll("option")
+                    .data(uniqueDates)
+                    .enter()
+                    .append("option")
+                    .attr("value", d => d)
+                    .text(d => d);
+
+                if (uniqueDates.length > 0) {
+                    dateSelect.property("value", uniqueDates[0]);
+                    renderGanttChart(uniqueDates[0]);
+                } else {
+                     alert("チャートを描画できる日付データがありません。");
+                     chartPlaceholder.classed("hidden", false).text("日付データが見つかりませんでした。");
+                }
+            } catch (error) {
+                console.error("CSVパースエラー:", error);
+                alert("CSVデータのパースに失敗しました。形式を確認してください。");
+                chartPlaceholder.classed("hidden", false).text("CSVパースエラー。");
+            } finally {
+                 chartLoader.classed("hidden", true);
+            }
+        });
+
+        dateSelect.on("change", function() {
+            const selectedDate = d3.select(this).property("value");
+            if (selectedDate) {
+                renderGanttChart(selectedDate);
+            }
+        });
+
+        function renderGanttChart(selectedDate) {
+            chartLoader.classed("hidden", false);
+            d3.select("#gantt-chart").selectAll("*").remove();
+
+            // 選択された日付のデータのみフィルタリング
+            const filteredData = allData.filter(d => d.startTime.toISOString().split('T')[0] === selectedDate);
+
+            if (filteredData.length === 0) {
+                chartLoader.classed("hidden", true);
+                chartPlaceholder.classed("hidden", false).html(`<p class="text-center p-4">${selectedDate} には実行データがありません。</p>`);
+                // SVGのサイズをリセットまたは小さくする
+                d3.select("#gantt-chart").attr("width", 0).attr("height", 0);
+                return;
+            }
+             chartPlaceholder.classed("hidden", true);
+
+
+            // ロボット名のリストを取得しソート
+            const robotNames = [...new Set(filteredData.map(d => d.robotName))].sort();
+            const numRobots = robotNames.length;
+            const height = numRobots * rowHeight + margin.top + margin.bottom;
+            const width = 24 * 60 + margin.left + margin.right; // 24時間 * 60px/hour
+
+            const svg = d3.select("#gantt-chart")
+                .attr("width", width)
+                .attr("height", height)
+                .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            // X軸（時間軸）の設定
+            const todayStart = new Date(selectedDate + "T00:00:00");
+            const todayEnd = new Date(selectedDate + "T23:59:59");
+
+            const xScale = d3.scaleTime()
+                .domain([todayStart, todayEnd])
+                .range([0, width - margin.left - margin.right]);
+
+            const xAxis = d3.axisTop(xScale)
+                .ticks(d3.timeHour.every(1)) // 1時間ごとに目盛り
+                .tickFormat(d3.timeFormat("%H:%M")); // 時:分 形式
+
+            svg.append("g")
+                .attr("class", "x axis")
+                .call(xAxis);
+
+            // Y軸（ロボット名）の設定
+            const yScale = d3.scaleBand()
+                .domain(robotNames)
+                .range([0, numRobots * rowHeight])
+                .padding(0.1);
+
+            const yAxis = d3.axisLeft(yScale).tickSize(0); // 目盛り線なし
+
+            svg.append("g")
+                .attr("class", "y axis robot-label")
+                .call(yAxis)
+                .selectAll("text")
+                .attr("x", -10) // ラベルの位置調整
+                .style("text-anchor", "end");
+
+
+            // グリッド線 (時間ごと)
+            svg.append("g")
+                .attr("class", "grid")
+                .call(d3.axisBottom(xScale)
+                    .ticks(d3.timeHour.every(1))
+                    .tickSize(numRobots * rowHeight)
+                    .tickFormat("")
+                )
+                .selectAll("line")
+                .style("stroke", "#e5e7eb") /* Tailwind gray-200 */
+                .style("stroke-opacity", 0.7);
+
+
+            // タスクバーの描画
+            const tasks = svg.selectAll(".task-bar-group")
+                .data(filteredData)
+                .enter()
+                .append("g")
+                .attr("class", "task-bar-group")
+                .attr("transform", d => `translate(0, ${yScale(d.robotName) + barPadding})`);
+
+            tasks.append("rect")
+                .attr("class", d => `task-bar ${d.errorCount > 0 ? 'error-bar' : `color-${robotNames.indexOf(d.robotName) % 7}` }`)
+                .attr("x", d => xScale(d.startTime))
+                .attr("width", d => {
+                    const w = xScale(d.endTime) - xScale(d.startTime);
+                    return Math.max(1, w); // 幅が0以下にならないように最小1px
+                })
+                .attr("height", barHeight)
+                .attr("rx", 3) // 角丸
+                .attr("ry", 3)
+                .on("mouseover", function(event, d) {
+                    tooltip.style("visibility", "visible").style("opacity", 1);
+                    d3.select(this).style("opacity", 0.7);
+                })
+                .on("mousemove", function(event, d) {
+                    tooltip.html(`<p class="font-semibold">${d.projectName}</p><hr class="my-1 border-gray-600"><p>${d.details.replace(/\n/g, "<br>")}</p>`)
+                        .style("left", (event.pageX + 15) + "px")
+                        .style("top", (event.pageY - 10) + "px");
+                })
+                .on("mouseout", function() {
+                    tooltip.style("visibility", "hidden").style("opacity", 0);
+                    d3.select(this).style("opacity", 1);
+                });
+
+            tasks.append("text")
+                .attr("x", d => xScale(d.startTime) + 5)
+                .attr("y", barHeight / 2)
+                .attr("dy", "0.35em")
+                .style("fill", "white")
+                .style("font-size", "0.7rem")
+                .style("pointer-events", "none") // テキストがマウスイベントをブロックしないように
+                .text(d => {
+                    const duration = (xScale(d.endTime) - xScale(d.startTime));
+                    return duration > 30 ? d.projectName.substring(0,15) + (d.projectName.length > 15 ? "..." : "") : ""; // 短いバーにはテキストを表示しない
+                });
+            chartLoader.classed("hidden", true);
+        }
+        // 初期表示の処理
+        (function init() {
+            const rawCsvData = csvInputArea.property("value"); // この時点では空のはず
+             if (!rawCsvData.trim()) { // データが空なので、プレースホルダーを表示
+                chartPlaceholder.classed("hidden", false).text("CSVデータを入力し、「チャート表示/更新」ボタンを押してください。");
+                return;
+            }
+            // 以下の処理はCSVデータが初期設定されていた場合の名残ですが、
+            // 空にするという指示なので、実際にはこの try-catch ブロックは
+            // renderButton が押されるまで実行されないか、エラーになることはありません。
+            try {
+                const cleanedCsvData = rawCsvData.replace(/\\N/g, '');
+                allData = d3.csvParse(cleanedCsvData, (d) => {
+                     if (!d.STARTTIME || !d.ENDTIME || !d.ROBOTNAME || !d.PROJECTNAME) return null;
+                    return {
+                        id: d.ID,
+                        robotName: d.ROBOTNAME,
+                        projectName: d.PROJECTNAME,
+                        startTime: new Date(d.STARTTIME),
+                        endTime: new Date(d.ENDTIME),
+                        errorCount: +d.ERRORCOUNT,
+                        executionTime: +d.EXECUTIONTIME,
+                        steps: +d.STEPS,
+                        details: `ロボット名: ${d.ROBOTNAME}\nプロジェクト名: ${d.PROJECTNAME}\n開始時刻: ${d.STARTTIME}\n終了時刻: ${d.ENDTIME}\nエラー数: ${d.ERRORCOUNT}\n実行時間: ${d.EXECUTIONTIME}ms\nステップ数: ${d.STEPS}`
+                    };
+                }).filter(d => d && d.startTime instanceof Date && !isNaN(d.startTime) && d.endTime instanceof Date && !isNaN(d.endTime) && d.endTime >= d.startTime);
+
+                uniqueDates = [...new Set(allData.map(d => d.startTime.toISOString().split('T')[0]))].sort();
+                dateSelect.selectAll("option")
+                    .data(uniqueDates)
+                    .enter()
+                    .append("option")
+                    .attr("value", d => d)
+                    .text(d => d);
+
+                if (uniqueDates.length > 0) {
+                    dateSelect.property("value", uniqueDates[0]);
+                } else {
+                    chartPlaceholder.classed("hidden", false).text("有効な日付データがCSVに見つかりません。");
+                }
+            } catch (error) {
+                console.error("初期CSVパースエラー:", error);
+                chartPlaceholder.classed("hidden", false).text("初期サンプルCSVのパースに失敗しました。");
+            }
+        })();
+    </script>
+</body>
+</html>

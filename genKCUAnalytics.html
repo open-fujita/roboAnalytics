@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ロボット別 KCUWAIT/ポイント ヒートマップ (5分刻み・レコード代表値)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .tooltip {
+            position: absolute;
+            text-align: left;
+            padding: 8px;
+            font: 12px sans-serif;
+            background: rgba(230, 230, 250, 0.95);
+            border: 1px solid #aaa;
+            border-radius: 8px;
+            pointer-events: none;
+            opacity: 0;
+            color: #333;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 10;
+        }
+        #heatmap-container {
+            overflow-x: auto; 
+            width: 100%;    
+        }
+        svg {
+            display: block;
+        }
+        .axis-label {
+            font-size: 0.8rem;
+        }
+        .legend-title { 
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            text-align: center;
+        }
+        .legend-item text { 
+            font-size: 0.75rem;
+            alignment-baseline: middle;
+        }
+        select, button {
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            border: 1px solid #d1d5db;
+            background-color: white;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+        }
+        select:hover, button:hover {
+            border-color: #6b7280;
+        }
+        h1 {
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #111827;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            gap: 1rem;
+        }
+        #loading {
+            text-align: center;
+            font-size: 1.2rem;
+            padding: 2rem;
+        }
+        #csv-data-area {
+            width: 100%;
+            height: 150px; 
+            margin-bottom: 1rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            padding: 0.5rem;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+         #legend-container svg {
+            margin-top: 0.5rem;
+        }
+        #heatmap-svg .x-axis text { 
+            font-size: 0.7rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+
+    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">ロボット別 KCUWAIT/ポイント ヒートマップ (5分刻み・レコード代表値)</h1>
+
+    <div class="controls mb-6">
+        <label for="robot-select" class="text-sm font-medium text-gray-700">ロボットを選択:</label>
+        <select id="robot-select" class="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
+            <option value="all">全ロボット (セル内最重要レコード)</option>
+        </select>
+    </div>
+    
+    <div class="mb-4">
+        <label for="csv-data-area" class="block text-sm font-medium text-gray-700 mb-1">CSVデータを以下に貼り付けてください:</label>
+        <textarea id="csv-data-area" placeholder="ここに robot_run - robot_run.csv.csv の内容を貼り付けます..."></textarea>
+        <button id="load-data-button" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">ヒートマップを生成</button>
+    </div>
+
+    <div id="loading" class="text-center text-gray-600" style="display:none;">データを処理中...</div>
+    <div id="heatmap-container" class="bg-white p-4 rounded-lg shadow">
+        <svg id="heatmap-svg"></svg>
+    </div>
+    <div id="legend-container" class="mt-4 flex flex-col items-center"></div>
+
+    <div class="tooltip"></div>
+
+    <script>
+        const margin = { top: 80, right: 30, bottom: 100, left: 120 };
+        const cellMinWidth = 7; // 5分あたりのセルの最小幅（ピクセル）
+        const totalSlotsInDay = 24 * (60 / 5); // 1日の5分スロット数 (288)
+        const dynamicSvgWidth = margin.left + margin.right + totalSlotsInDay * cellMinWidth;
+
+        const tooltip = d3.select(".tooltip");
+        const legendSvgContainer = d3.select("#legend-container");
+
+        let allProcessedData = [];
+        let robotNamesList = [];
+
+        const colors = {
+            good: "#66c2a5",
+            caution: "#fdae61",
+            danger: "#d73027",
+            noData: "#eeeeee"
+        };
+        
+        function getCategoryLevel(rate) {
+            if (isNaN(rate)) return -1; 
+            if (rate === Infinity || rate > 10) return 3; 
+            if (rate > 4) return 2; 
+            if (rate >= 0 && rate <= 4) return 1; 
+            return 0; 
+        }
+
+        function getCategoryColor(level) {
+            if (level === 3) return colors.danger;
+            if (level === 2) return colors.caution;
+            if (level === 1) return colors.good;
+            return colors.noData;
+        }
+
+        function getCategoryName(level) {
+             if (level === 3) return "危険";
+             if (level === 2) return "注意";
+             if (level === 1) return "良好";
+             return "データなし/レート0";
+        }
+
+        function getEndTimeOfSlot(startTimeSlot) { // HH:MM (5分間隔の開始)
+            const [h, m] = startTimeSlot.split(':').map(Number);
+            let endMinute = m + 4;
+            // 時間の繰り上がりは考慮しない（スロットは時間内で完結するため）
+            return `${String(h).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
+        }
+        
+        document.getElementById('load-data-button').addEventListener('click', function() {
+            const csvDataString = document.getElementById('csv-data-area').value;
+            if (!csvDataString.trim()) {
+                alert("CSVデータを貼り付けてください。");
+                return;
+            }
+
+            document.getElementById('loading').style.display = 'block';
+            d3.select("#heatmap-svg").selectAll("*").remove();
+            legendSvgContainer.html(''); 
+
+            try {
+                const data = d3.csvParse(csvDataString);
+                
+                allProcessedData = data.map(d => {
+                    const startTime = d.STARTTIME;
+                    let parsedDate = null, parsedHour = null, parsedMinute = null, timeSlot = null;
+
+                    if (startTime) {
+                        const dateTimeParts = startTime.split(' ');
+                        if (dateTimeParts.length === 2) {
+                            parsedDate = dateTimeParts[0]; 
+                            const timeParts = dateTimeParts[1].split(':');
+                            if (timeParts.length >= 2) {
+                                parsedHour = +timeParts[0];
+                                parsedMinute = +timeParts[1];
+                                if (!isNaN(parsedHour) && !isNaN(parsedMinute)) {
+                                    const fiveMinSlotStart = Math.floor(parsedMinute / 5) * 5; // 5分間隔に丸める
+                                    timeSlot = `${String(parsedHour).padStart(2, '0')}:${String(fiveMinSlotStart).padStart(2, '0')}`;
+                                }
+                            }
+                        }
+                    }
+                    
+                    const kcuwaitVal = +d.KCUWAIT || 0;
+                    const kcucpointsVal = +d.KCUPOINTS || 0;
+                    let kcuRate = 0; 
+
+                    if (kcucpointsVal > 0) { kcuRate = kcuwaitVal / kcucpointsVal; } 
+                    else if (kcuwaitVal > 0 && kcucpointsVal === 0) { kcuRate = Infinity; }
+
+                    return {
+                        id: d.ID, date: parsedDate, hour: parsedHour, minute: parsedMinute, time_slot: timeSlot,
+                        robotName: d.ROBOTNAME, kcuwait_raw: kcuwaitVal, kcucpoints_raw: kcucpointsVal,
+                        kcu_rate: kcuRate, category_level: getCategoryLevel(kcuRate)
+                    };
+                }).filter(d => d.date && d.time_slot !== null);
+
+                if (allProcessedData.length === 0) {
+                    document.getElementById('loading').style.display = 'none';
+                    d3.select("#heatmap-svg").append("text").attr("x", dynamicSvgWidth/2).attr("y", 50).attr("text-anchor", "middle").text("有効なデータが見つかりませんでした。");
+                    return;
+                }
+                
+                const selectElement = document.getElementById('robot-select');
+                while (selectElement.childNodes.length > 1) {
+                     if(selectElement.lastChild.value !== "all") { selectElement.removeChild(selectElement.lastChild); } 
+                     else if (selectElement.childNodes.length === 1 && selectElement.firstChild.value === "all") { break; } 
+                     else {
+                         let allOptionFound = false;
+                         for(let i=0; i<selectElement.childNodes.length; i++){ if(selectElement.childNodes[i].value === "all") allOptionFound = true; }
+                         if(!allOptionFound && selectElement.firstChild){ 
+                            const defaultOption = document.createElement('option');
+                            defaultOption.value = "all";
+                            defaultOption.textContent = "全ロボット (セル内最重要レコード)";
+                            selectElement.insertBefore(defaultOption, selectElement.firstChild);
+                         }
+                         break; 
+                     }
+                }
+                selectElement.options[0].textContent = "全ロボット (セル内最重要レコード)";
+
+                robotNamesList = ["all", ...new Set(allProcessedData.map(d => d.robotName).filter(name => name).sort())];
+                
+                const selectD3 = d3.select("#robot-select");
+                selectD3.selectAll("option.robot-specific").remove();
+                selectD3.selectAll("option.robot-specific")
+                    .data(robotNamesList.filter(name => name !== "all"))
+                    .enter().append("option")
+                    .attr("class", "robot-specific").attr("value", d => d).text(d => d);
+
+                selectD3.on("change", function() { drawHeatmap(this.value); });
+
+                drawHeatmap(selectElement.value || "all"); 
+                document.getElementById('loading').style.display = 'none';
+
+            } catch (error) {
+                console.error('CSVデータのパースエラー:', error);
+                document.getElementById('loading').style.display = 'none';
+                d3.select("#heatmap-svg").append("text").attr("x", dynamicSvgWidth/2).attr("y", 50).attr("text-anchor", "middle").text(`CSVパースエラー: ${error.message}`);
+            }
+        });
+
+        function drawHeatmap(selectedRobot) {
+            const currentSvg = d3.select("#heatmap-svg");
+            currentSvg.selectAll("*").remove();
+            legendSvgContainer.html(''); 
+
+            let heatmapData;
+            const baseDataForRobot = (selectedRobot === "all") ? allProcessedData : allProcessedData.filter(d => d.robotName === selectedRobot);
+
+            const groupedByDateTimeSlot = d3.group(baseDataForRobot, d => d.date, d => d.time_slot);
+            heatmapData = [];
+            groupedByDateTimeSlot.forEach((timeSlotMap, date) => {
+                timeSlotMap.forEach((valuesInCell, time_slot) => {
+                    if (valuesInCell.length === 0) return;
+
+                    valuesInCell.sort((a, b) => {
+                        if (b.category_level !== a.category_level) { return b.category_level - a.category_level; }
+                        if (a.kcu_rate === Infinity && b.kcu_rate !== Infinity) return -1;
+                        if (b.kcu_rate === Infinity && a.kcu_rate !== Infinity) return 1;
+                        if (a.kcu_rate === Infinity && b.kcu_rate === Infinity) return 0;
+                        return b.kcu_rate - a.kcu_rate;
+                    });
+                    const representativeRecord = valuesInCell[0];
+                    
+                    heatmapData.push({
+                        date: date, time_slot: time_slot, value: representativeRecord.kcu_rate, 
+                        category_level: representativeRecord.category_level,
+                        category_name: getCategoryName(representativeRecord.category_level),
+                        representative_record_id: representativeRecord.id,
+                        representative_kcu_rate: representativeRecord.kcu_rate,
+                        representative_raw_kcuwait: representativeRecord.kcuwait_raw,
+                        representative_robot_name: representativeRecord.robotName,
+                        execution_count_in_cell: valuesInCell.length,
+                        total_raw_kcuwait_in_cell: d3.sum(valuesInCell, v => v.kcuwait_raw)
+                    });
+                });
+            });
+            
+            if (heatmapData.length === 0) {
+                 currentSvg.append("text").attr("x", dynamicSvgWidth / 2).attr("y", 50).attr("text-anchor", "middle")
+                    .text(selectedRobot === "all" ? "全ロボットのデータがありません。" : `ロボット「${selectedRobot}」のデータがありません。`);
+                return;
+            }
+
+            const dates = [...new Set(heatmapData.map(d => d.date))].sort((a,b) => new Date(a) - new Date(b));
+            const timeSlots = []; // 5分刻みのタイムスロットを生成
+            for (let h = 0; h < 24; h++) {
+                for (let m = 0; m < 60; m += 5) {
+                    timeSlots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+                }
+            }
+
+            const cellHeight = 30;
+            const dynamicSvgHeight = cellHeight * dates.length + margin.top + margin.bottom;
+            currentSvg.attr("width", dynamicSvgWidth).attr("height", dynamicSvgHeight);
+
+            const width = dynamicSvgWidth - margin.left - margin.right;
+            const height = dynamicSvgHeight - margin.top - margin.bottom;
+
+            const chart = currentSvg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const xScale = d3.scaleBand().domain(timeSlots).range([0, width]).padding(0.02); // パディング調整
+            chart.append("g").attr("class", "x-axis")
+                .attr("transform", `translate(0,${height})`)
+                .call(d3.axisBottom(xScale)
+                    .tickValues(timeSlots.filter((d, i) => i % 12 === 0)) // 1時間ごと (5分スロット * 12 = 60分)
+                    .tickFormat(d => d.substring(0, 2) + "時") 
+                )
+                .selectAll("text").style("text-anchor", "end").attr("dx", "-.8em").attr("dy", ".15em").attr("transform", "rotate(-45)");
+            chart.append("text").attr("class", "axis-label text-sm").attr("text-anchor", "middle").attr("x", width / 2).attr("y", height + margin.bottom * 0.85).text("時間");
+
+            const yScale = d3.scaleBand().domain(dates).range([0, height]).padding(0.05);
+            chart.append("g").call(d3.axisLeft(yScale));
+            chart.append("text").attr("class", "axis-label text-sm").attr("text-anchor", "middle").attr("transform", "rotate(-90)").attr("y", -margin.left * 0.85).attr("x", -height / 2).text("日付");
+
+            chart.selectAll(".heatmap-cell")
+                .data(heatmapData, d => `${d.date}:${d.time_slot}`)
+                .enter()
+                .append("rect")
+                .attr("class", "heatmap-cell")
+                .attr("x", d => xScale(d.time_slot))
+                .attr("y", d => yScale(d.date))
+                .attr("width", xScale.bandwidth())
+                .attr("height", yScale.bandwidth())
+                .style("fill", d => getCategoryColor(d.category_level))
+                .on("mouseover", function(event, d) {
+                    tooltip.transition().duration(200).style("opacity", 1);
+                    let robotInfo = selectedRobot === "all" ? `代表ロボット: ${d.representative_robot_name || 'N/A'}` : selectedRobot;
+                    if (selectedRobot === "all" && d.execution_count_in_cell > 1) {
+                        robotInfo += ` (他 ${d.execution_count_in_cell -1} 件)`;
+                    }
+                    
+                    const timeSlotEnd = getEndTimeOfSlot(d.time_slot);
+
+                    tooltip.html(`
+                        <strong>日付:</strong> ${d.date}<br/>
+                        <strong>時間帯:</strong> ${d.time_slot} - ${timeSlotEnd}<br/>
+                        <strong>${selectedRobot === "all" ? "状況" : "ロボット"}:</strong> ${robotInfo}<br/>
+                        <strong>代表 KCU/ポイント:</strong> ${d.representative_kcu_rate === Infinity ? "∞ (不定)" : (isNaN(d.representative_kcu_rate) ? "N/A" : d.representative_kcu_rate.toFixed(2))}<br/>
+                        <strong>分類:</strong> ${d.category_name}<br/>
+                        ${d.representative_record_id ? `<strong>代表ID:</strong> ${d.representative_record_id}<br/>` : ''}
+                        <strong>該当時間帯の実行総数:</strong> ${d.execution_count_in_cell}<br/>
+                        <strong>該当時間帯の総KCUWAIT(生):</strong> ${d.total_raw_kcuwait_in_cell.toLocaleString()}
+                    `)
+                    .style("left", (event.pageX + 15) + "px")
+                    .style("top", (event.pageY - 28) + "px");
+                    d3.select(this).style("stroke", "black").style("stroke-width", 0.5);
+                })
+                .on("mouseout", function() {
+                    tooltip.transition().duration(500).style("opacity", 0);
+                    d3.select(this).style("stroke", "none");
+                });
+
+            const legendData = [
+                { level: 1, text: "良好 (0 - 4 KCU/ポイント)" },
+                { level: 2, text: "注意 (>4 - 10 KCU/ポイント)" },
+                { level: 3, text: "危険 (>10 KCU/ポイント または 不定)" },
+                { level: -1, text: "データなし/レート0" }
+            ];
+
+            legendSvgContainer.append("div").attr("class", "legend-title").text("凡例 (代表レコードの KCUWAIT/ポイント)");
+            const legendSvgInstance = legendSvgContainer.append("svg").attr("height", (20 + 5) * legendData.length).attr("width", 350);
+            const legendItems = legendSvgInstance.selectAll(".legend-item").data(legendData).enter().append("g")
+                .attr("class", "legend-item").attr("transform", (d, i) => `translate(10, ${i * (20 + 5)})`);
+            legendItems.append("rect").attr("width", 20).attr("height", 20).style("fill", d => getCategoryColor(d.level));
+            legendItems.append("text").attr("x", 20 + 5).attr("y", 20 / 2).text(d => d.text)
+                .attr("class", "legend-item-text").attr("dominant-baseline", "middle");
+        }
+    </script>
+</body>
+</html>
