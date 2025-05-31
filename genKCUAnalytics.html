@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ロボット別 KCUWAIT/ポイント ヒートマップ (5分刻み・レコード代表値)</title>
+    <title>ロボット別 同時実行数 ヒートマップ (5分刻み)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
@@ -98,12 +98,12 @@
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
-    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">ロボット別 KCUWAIT/ポイント ヒートマップ (5分刻み・レコード代表値)</h1>
+    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">ロボット別 同時実行数 ヒートマップ (5分刻み)</h1>
 
     <div class="controls mb-6">
         <label for="robot-select" class="text-sm font-medium text-gray-700">ロボットを選択:</label>
         <select id="robot-select" class="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
-            <option value="all">全ロボット (セル内最重要レコード)</option>
+            <option value="all">全ロボット (スロット内総実行回数)</option>
         </select>
     </div>
     
@@ -123,49 +123,48 @@
 
     <script>
         const margin = { top: 80, right: 30, bottom: 100, left: 120 };
-        const cellMinWidth = 7; // 5分あたりのセルの最小幅（ピクセル）
-        const totalSlotsInDay = 24 * (60 / 5); // 1日の5分スロット数 (288)
+        const cellMinWidth = 7; 
+        const totalSlotsInDay = 24 * (60 / 5); 
         const dynamicSvgWidth = margin.left + margin.right + totalSlotsInDay * cellMinWidth;
 
         const tooltip = d3.select(".tooltip");
         const legendSvgContainer = d3.select("#legend-container");
 
-        let allProcessedData = [];
+        let allRawData = []; // CSVパース後の生データ
         let robotNamesList = [];
 
         const colors = {
-            good: "#66c2a5",
-            caution: "#fdae61",
-            danger: "#d73027",
-            noData: "#eeeeee"
+            good: "#66c2a5",    // 良好 (0-4)
+            caution: "#fdae61", // 注意 (5-10)
+            danger: "#d73027",  // 危険 (>10)
+            noData: "#eeeeee"   // データなし (実行0回)
         };
         
-        function getCategoryLevel(rate) {
-            if (isNaN(rate)) return -1; 
-            if (rate === Infinity || rate > 10) return 3; 
-            if (rate > 4) return 2; 
-            if (rate >= 0 && rate <= 4) return 1; 
-            return 0; 
+        // 実行回数に基づいてカテゴリレベルを返す
+        function getCategoryLevelByCount(count) {
+            if (count > 10) return 3; // 危険
+            if (count >= 5 && count <= 10) return 2; // 注意
+            if (count >= 0 && count <= 4) return 1; // 良好 (0も良好扱い)
+            return 0; // 通常はここに来ないが、念のため
         }
 
-        function getCategoryColor(level) {
+        function getCategoryColorByLevel(level) {
             if (level === 3) return colors.danger;
             if (level === 2) return colors.caution;
             if (level === 1) return colors.good;
-            return colors.noData;
+            return colors.noData; // level 0 or other
         }
 
-        function getCategoryName(level) {
+        function getCategoryNameByLevel(level) {
              if (level === 3) return "危険";
              if (level === 2) return "注意";
              if (level === 1) return "良好";
-             return "データなし/レート0";
+             return "データなし";
         }
 
-        function getEndTimeOfSlot(startTimeSlot) { // HH:MM (5分間隔の開始)
+        function getEndTimeOfSlot(startTimeSlot) {
             const [h, m] = startTimeSlot.split(':').map(Number);
             let endMinute = m + 4;
-            // 時間の繰り上がりは考慮しない（スロットは時間内で完結するため）
             return `${String(h).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
         }
         
@@ -183,7 +182,7 @@
             try {
                 const data = d3.csvParse(csvDataString);
                 
-                allProcessedData = data.map(d => {
+                allRawData = data.map(d => { // 変数名を allRawData に変更
                     const startTime = d.STARTTIME;
                     let parsedDate = null, parsedHour = null, parsedMinute = null, timeSlot = null;
 
@@ -196,28 +195,18 @@
                                 parsedHour = +timeParts[0];
                                 parsedMinute = +timeParts[1];
                                 if (!isNaN(parsedHour) && !isNaN(parsedMinute)) {
-                                    const fiveMinSlotStart = Math.floor(parsedMinute / 5) * 5; // 5分間隔に丸める
+                                    const fiveMinSlotStart = Math.floor(parsedMinute / 5) * 5;
                                     timeSlot = `${String(parsedHour).padStart(2, '0')}:${String(fiveMinSlotStart).padStart(2, '0')}`;
                                 }
                             }
                         }
                     }
-                    
-                    const kcuwaitVal = +d.KCUWAIT || 0;
-                    const kcucpointsVal = +d.KCUPOINTS || 0;
-                    let kcuRate = 0; 
-
-                    if (kcucpointsVal > 0) { kcuRate = kcuwaitVal / kcucpointsVal; } 
-                    else if (kcuwaitVal > 0 && kcucpointsVal === 0) { kcuRate = Infinity; }
-
-                    return {
-                        id: d.ID, date: parsedDate, hour: parsedHour, minute: parsedMinute, time_slot: timeSlot,
-                        robotName: d.ROBOTNAME, kcuwait_raw: kcuwaitVal, kcucpoints_raw: kcucpointsVal,
-                        kcu_rate: kcuRate, category_level: getCategoryLevel(kcuRate)
+                    return { // KCU関連の計算は削除し、必要な情報のみ保持
+                        id: d.ID, date: parsedDate, time_slot: timeSlot, robotName: d.ROBOTNAME
                     };
                 }).filter(d => d.date && d.time_slot !== null);
 
-                if (allProcessedData.length === 0) {
+                if (allRawData.length === 0) {
                     document.getElementById('loading').style.display = 'none';
                     d3.select("#heatmap-svg").append("text").attr("x", dynamicSvgWidth/2).attr("y", 50).attr("text-anchor", "middle").text("有効なデータが見つかりませんでした。");
                     return;
@@ -233,15 +222,15 @@
                          if(!allOptionFound && selectElement.firstChild){ 
                             const defaultOption = document.createElement('option');
                             defaultOption.value = "all";
-                            defaultOption.textContent = "全ロボット (セル内最重要レコード)";
+                            defaultOption.textContent = "全ロボット (スロット内総実行回数)"; // テキスト更新
                             selectElement.insertBefore(defaultOption, selectElement.firstChild);
                          }
                          break; 
                      }
                 }
-                selectElement.options[0].textContent = "全ロボット (セル内最重要レコード)";
+                selectElement.options[0].textContent = "全ロボット (スロット内総実行回数)"; // ドロップダウンのテキストを更新
 
-                robotNamesList = ["all", ...new Set(allProcessedData.map(d => d.robotName).filter(name => name).sort())];
+                robotNamesList = ["all", ...new Set(allRawData.map(d => d.robotName).filter(name => name).sort())];
                 
                 const selectD3 = d3.select("#robot-select");
                 selectD3.selectAll("option.robot-specific").remove();
@@ -267,46 +256,40 @@
             currentSvg.selectAll("*").remove();
             legendSvgContainer.html(''); 
 
-            let heatmapData;
-            const baseDataForRobot = (selectedRobot === "all") ? allProcessedData : allProcessedData.filter(d => d.robotName === selectedRobot);
+            let dataForHeatmap;
+            if (selectedRobot === "all") {
+                dataForHeatmap = allRawData;
+            } else {
+                dataForHeatmap = allRawData.filter(d => d.robotName === selectedRobot);
+            }
 
-            const groupedByDateTimeSlot = d3.group(baseDataForRobot, d => d.date, d => d.time_slot);
-            heatmapData = [];
+            const groupedByDateTimeSlot = d3.group(dataForHeatmap, d => d.date, d => d.time_slot);
+            
+            let heatmapCellData = [];
             groupedByDateTimeSlot.forEach((timeSlotMap, date) => {
                 timeSlotMap.forEach((valuesInCell, time_slot) => {
-                    if (valuesInCell.length === 0) return;
-
-                    valuesInCell.sort((a, b) => {
-                        if (b.category_level !== a.category_level) { return b.category_level - a.category_level; }
-                        if (a.kcu_rate === Infinity && b.kcu_rate !== Infinity) return -1;
-                        if (b.kcu_rate === Infinity && a.kcu_rate !== Infinity) return 1;
-                        if (a.kcu_rate === Infinity && b.kcu_rate === Infinity) return 0;
-                        return b.kcu_rate - a.kcu_rate;
-                    });
-                    const representativeRecord = valuesInCell[0];
+                    const executionCount = valuesInCell.length;
+                    const categoryLevel = getCategoryLevelByCount(executionCount);
                     
-                    heatmapData.push({
-                        date: date, time_slot: time_slot, value: representativeRecord.kcu_rate, 
-                        category_level: representativeRecord.category_level,
-                        category_name: getCategoryName(representativeRecord.category_level),
-                        representative_record_id: representativeRecord.id,
-                        representative_kcu_rate: representativeRecord.kcu_rate,
-                        representative_raw_kcuwait: representativeRecord.kcuwait_raw,
-                        representative_robot_name: representativeRecord.robotName,
-                        execution_count_in_cell: valuesInCell.length,
-                        total_raw_kcuwait_in_cell: d3.sum(valuesInCell, v => v.kcuwait_raw)
+                    heatmapCellData.push({
+                        date: date, 
+                        time_slot: time_slot, 
+                        execution_count: executionCount,
+                        category_level: categoryLevel,
+                        category_name: getCategoryNameByLevel(categoryLevel)
+                        // KCUWAIT関連のツールチップ情報は削除 (必要なら再度追加)
                     });
                 });
             });
             
-            if (heatmapData.length === 0) {
+            if (heatmapCellData.length === 0) {
                  currentSvg.append("text").attr("x", dynamicSvgWidth / 2).attr("y", 50).attr("text-anchor", "middle")
-                    .text(selectedRobot === "all" ? "全ロボットのデータがありません。" : `ロボット「${selectedRobot}」のデータがありません。`);
+                    .text(selectedRobot === "all" ? "対象期間に実行記録がありません。" : `ロボット「${selectedRobot}」の実行記録がありません。`);
                 return;
             }
 
-            const dates = [...new Set(heatmapData.map(d => d.date))].sort((a,b) => new Date(a) - new Date(b));
-            const timeSlots = []; // 5分刻みのタイムスロットを生成
+            const dates = [...new Set(heatmapCellData.map(d => d.date))].sort((a,b) => new Date(a) - new Date(b));
+            const timeSlots = []; 
             for (let h = 0; h < 24; h++) {
                 for (let m = 0; m < 60; m += 5) {
                     timeSlots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
@@ -322,11 +305,11 @@
 
             const chart = currentSvg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-            const xScale = d3.scaleBand().domain(timeSlots).range([0, width]).padding(0.02); // パディング調整
+            const xScale = d3.scaleBand().domain(timeSlots).range([0, width]).padding(0.02);
             chart.append("g").attr("class", "x-axis")
                 .attr("transform", `translate(0,${height})`)
                 .call(d3.axisBottom(xScale)
-                    .tickValues(timeSlots.filter((d, i) => i % 12 === 0)) // 1時間ごと (5分スロット * 12 = 60分)
+                    .tickValues(timeSlots.filter((d, i) => i % 12 === 0)) 
                     .tickFormat(d => d.substring(0, 2) + "時") 
                 )
                 .selectAll("text").style("text-anchor", "end").attr("dx", "-.8em").attr("dy", ".15em").attr("transform", "rotate(-45)");
@@ -337,7 +320,7 @@
             chart.append("text").attr("class", "axis-label text-sm").attr("text-anchor", "middle").attr("transform", "rotate(-90)").attr("y", -margin.left * 0.85).attr("x", -height / 2).text("日付");
 
             chart.selectAll(".heatmap-cell")
-                .data(heatmapData, d => `${d.date}:${d.time_slot}`)
+                .data(heatmapCellData, d => `${d.date}:${d.time_slot}`)
                 .enter()
                 .append("rect")
                 .attr("class", "heatmap-cell")
@@ -345,25 +328,16 @@
                 .attr("y", d => yScale(d.date))
                 .attr("width", xScale.bandwidth())
                 .attr("height", yScale.bandwidth())
-                .style("fill", d => getCategoryColor(d.category_level))
+                .style("fill", d => getCategoryColorByLevel(d.category_level))
                 .on("mouseover", function(event, d) {
                     tooltip.transition().duration(200).style("opacity", 1);
-                    let robotInfo = selectedRobot === "all" ? `代表ロボット: ${d.representative_robot_name || 'N/A'}` : selectedRobot;
-                    if (selectedRobot === "all" && d.execution_count_in_cell > 1) {
-                        robotInfo += ` (他 ${d.execution_count_in_cell -1} 件)`;
-                    }
-                    
                     const timeSlotEnd = getEndTimeOfSlot(d.time_slot);
-
                     tooltip.html(`
                         <strong>日付:</strong> ${d.date}<br/>
                         <strong>時間帯:</strong> ${d.time_slot} - ${timeSlotEnd}<br/>
-                        <strong>${selectedRobot === "all" ? "状況" : "ロボット"}:</strong> ${robotInfo}<br/>
-                        <strong>代表 KCU/ポイント:</strong> ${d.representative_kcu_rate === Infinity ? "∞ (不定)" : (isNaN(d.representative_kcu_rate) ? "N/A" : d.representative_kcu_rate.toFixed(2))}<br/>
-                        <strong>分類:</strong> ${d.category_name}<br/>
-                        ${d.representative_record_id ? `<strong>代表ID:</strong> ${d.representative_record_id}<br/>` : ''}
-                        <strong>該当時間帯の実行総数:</strong> ${d.execution_count_in_cell}<br/>
-                        <strong>該当時間帯の総KCUWAIT(生):</strong> ${d.total_raw_kcuwait_in_cell.toLocaleString()}
+                        <strong>ロボット:</strong> ${selectedRobot === "all" ? "全ロボット" : selectedRobot}<br/>
+                        <strong>実行回数:</strong> ${d.execution_count}<br/>
+                        <strong>分類:</strong> ${d.category_name}
                     `)
                     .style("left", (event.pageX + 15) + "px")
                     .style("top", (event.pageY - 28) + "px");
@@ -375,17 +349,22 @@
                 });
 
             const legendData = [
-                { level: 1, text: "良好 (0 - 4 KCU/ポイント)" },
-                { level: 2, text: "注意 (>4 - 10 KCU/ポイント)" },
-                { level: 3, text: "危険 (>10 KCU/ポイント または 不定)" },
-                { level: -1, text: "データなし/レート0" }
+                { level: 1, text: "良好 (0 - 4 回)" },
+                { level: 2, text: "注意 (5 - 10 回)" },
+                { level: 3, text: "危険 (>10 回)" },
+                // { level: 0, text: "実行なし" } // 実行0回は良好(level 1)に含めるため、凡例からは削除も検討
             ];
+             // 実行0回も良好に含めるため、凡例のテキストを調整
+            if (legendData.find(item => item.level === 1)) {
+                legendData.find(item => item.level === 1).text = "良好 (0 - 4 回)";
+            }
 
-            legendSvgContainer.append("div").attr("class", "legend-title").text("凡例 (代表レコードの KCUWAIT/ポイント)");
-            const legendSvgInstance = legendSvgContainer.append("svg").attr("height", (20 + 5) * legendData.length).attr("width", 350);
+
+            legendSvgContainer.append("div").attr("class", "legend-title").text("凡例 (5分間の実行回数)");
+            const legendSvgInstance = legendSvgContainer.append("svg").attr("height", (20 + 5) * legendData.length).attr("width", 300); // 幅調整
             const legendItems = legendSvgInstance.selectAll(".legend-item").data(legendData).enter().append("g")
                 .attr("class", "legend-item").attr("transform", (d, i) => `translate(10, ${i * (20 + 5)})`);
-            legendItems.append("rect").attr("width", 20).attr("height", 20).style("fill", d => getCategoryColor(d.level));
+            legendItems.append("rect").attr("width", 20).attr("height", 20).style("fill", d => getCategoryColorByLevel(d.level));
             legendItems.append("text").attr("x", 20 + 5).attr("y", 20 / 2).text(d => d.text)
                 .attr("class", "legend-item-text").attr("dominant-baseline", "middle");
         }
