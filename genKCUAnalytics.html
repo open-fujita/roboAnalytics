@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RPA KCU Wait率・同時実行数 ヒートマップ (5分刻み)</title>
+    <title>RPA KCU Wait率 現状・改善シミュレーション比較ヒートマップ v4</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
@@ -19,7 +19,7 @@
             text-align: left;
             padding: 8px;
             font: 12px sans-serif;
-            background: rgba(240, 240, 246, 0.95); /* 少し明るい背景 */
+            background: rgba(240, 240, 246, 0.95);
             border: 1px solid #ccc;
             border-radius: 8px;
             pointer-events: none;
@@ -27,9 +27,21 @@
             color: #333;
             box-shadow: 0 2px 5px rgba(0,0,0,0.15);
             z-index: 10;
-            max-width: 300px; /* ツールチップの最大幅 */
+            max-width: 380px; 
         }
-        #heatmap-container {
+        .heatmap-section {
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .heatmap-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            text-align: center;
+            margin-bottom: 0.5rem;
+            color: #374151;
+        }
+        #heatmap-container-actual, #heatmap-container-simulated {
             overflow-x: auto; 
             width: 100%;    
         }
@@ -49,17 +61,15 @@
             font-size: 0.75rem;
             alignment-baseline: middle;
         }
-        select, button {
-            padding: 0.5rem 1rem;
+        select, button, input[type="range"] {
+            padding: 0.5rem;
             border-radius: 0.375rem;
             border: 1px solid #d1d5db;
             background-color: white;
-            cursor: pointer;
-            transition: all 0.2s ease-in-out;
         }
-        select:hover, button:hover {
-            border-color: #6b7280;
-        }
+        button { cursor: pointer; transition: all 0.2s ease-in-out;}
+        button:hover { border-color: #6b7280; }
+
         h1 {
             text-align: center;
             font-size: 1.5rem;
@@ -69,10 +79,16 @@
         }
         .controls {
             display: flex;
+            flex-wrap: wrap;
             justify-content: center;
             align-items: center;
             margin-bottom: 1.5rem;
             gap: 1rem;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         #loading {
             text-align: center;
@@ -92,44 +108,62 @@
          #legend-container svg {
             margin-top: 0.5rem;
         }
-        #heatmap-svg .x-axis text { 
+        #heatmap-svg-actual .x-axis text, #heatmap-svg-simulated .x-axis text { 
             font-size: 0.7rem;
         }
-        .cell-high-concurrency { /* 同時実行数が多い場合の枠線 */
+        .cell-high-concurrency {
             stroke: #06b6d4; /* Cyan */
             stroke-width: 2.5px;
             stroke-opacity: 0.85;
-            stroke-dasharray: 3 1; /* 点線風 */
+            stroke-dasharray: 3 1;
         }
     </style>
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
-    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">RPA KCU Wait率 ・ 同時実行数 ヒートマップ (5分刻み)</h1>
+    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">RPA KCU Wait率 現状・改善シミュレーション比較 (5分刻み)</h1>
 
     <div class="controls mb-6">
-        <label for="robot-select" class="text-sm font-medium text-gray-700">ロボットを選択:</label>
-        <select id="robot-select" class="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
-            <option value="all">全ロボット (スロット内集計)</option>
-        </select>
+        <div class="control-group">
+            <label for="robot-select" class="text-sm font-medium text-gray-700">ロボットを選択:</label>
+            <select id="robot-select" class="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
+                <option value="all">全ロボット (スロット内集計)</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label for="kcu-slider" class="text-sm font-medium text-gray-700">シミュレーションKCU数 (下段グラフ):</label>
+            <input type="range" id="kcu-slider" min="1" max="10" value="1" class="w-32 md:w-48">
+            <span id="kcu-value-display" class="text-sm font-medium text-gray-700 w-8 text-center">1 KCU</span>
+        </div>
     </div>
     
     <div class="mb-4">
         <label for="csv-data-area" class="block text-sm font-medium text-gray-700 mb-1">CSVデータを以下に貼り付けてください:</label>
         <textarea id="csv-data-area" placeholder="ここに robot_run - robot_run.csv.csv の内容を貼り付けます..."></textarea>
-        <button id="load-data-button" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">ヒートマップを生成</button>
+        <button id="load-data-button" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">ヒートマップを生成・更新</button>
     </div>
 
     <div id="loading" class="text-center text-gray-600" style="display:none;">データを処理中...</div>
-    <div id="heatmap-container" class="bg-white p-4 rounded-lg shadow">
-        <svg id="heatmap-svg"></svg>
-    </div>
-    <div id="legend-container" class="mt-4 flex flex-col items-center"></div>
 
+    <div class="heatmap-section">
+        <h2 class="heatmap-title" id="actual-heatmap-title">現状のKCU Wait率</h2>
+        <div id="heatmap-container-actual" class="bg-white p-4 rounded-lg shadow">
+            <svg id="heatmap-svg-actual"></svg>
+        </div>
+    </div>
+
+    <div class="heatmap-section">
+        <h2 class="heatmap-title" id="simulated-heatmap-title">KCUシミュレーション結果 (<span id="simulated-kcu-count-title">1</span> KCU)</h2>
+        <div id="heatmap-container-simulated" class="bg-white p-4 rounded-lg shadow">
+            <svg id="heatmap-svg-simulated"></svg>
+        </div>
+    </div>
+    
+    <div id="legend-container" class="mt-4 flex flex-col items-center"></div>
     <div class="tooltip"></div>
 
     <script>
-        const margin = { top: 80, right: 30, bottom: 100, left: 120 };
+        const margin = { top: 60, right: 30, bottom: 100, left: 120 };
         const cellMinWidth = 7; 
         const totalSlotsInDay = 24 * (60 / 5); 
         const dynamicSvgWidth = margin.left + margin.right + totalSlotsInDay * cellMinWidth;
@@ -139,21 +173,24 @@
 
         let allRawData = [];
         let robotNamesList = [];
+        let currentSelectedRobot = "all";
+        let currentKcuSimulationCount = 1;
 
-        const CONCURRENCY_THRESHOLD = 5; // この実行回数以上で枠線表示
+        const KCU_POINTS_PER_KCU_PER_SECOND = 5000;
+        const CONCURRENCY_THRESHOLD = 5;
 
         const kcuWaitRateColors = {
-            good: "#66c2a5",    // 良好 (0-5%)
-            caution: "#fdae61", // 注意 (>5-15%)
-            danger: "#d95f02",  // 危険 (>15%)
-            noData: "#eeeeee"   // データなし/計算不可
+            good: "#66c2a5",
+            caution: "#fdae61",
+            danger: "#d95f02",
+            noData: "#eeeeee"
         };
         
         function getKcuWaitRateCategoryLevel(rate) {
-            if (isNaN(rate) || rate < 0) return 0; // データなし or 計算不可
-            if (rate > 0.15) return 3; // 危険 (>15%)
-            if (rate > 0.05) return 2; // 注意 (>5%)
-            return 1; // 良好 (0-5%)
+            if (isNaN(rate) || rate < 0) return 0;
+            if (rate > 0.15) return 3; 
+            if (rate > 0.05) return 2; 
+            return 1; 
         }
 
         function getKcuWaitRateCategoryColor(level) {
@@ -182,18 +219,13 @@
                 alert("CSVデータを貼り付けてください。");
                 return;
             }
-
             document.getElementById('loading').style.display = 'block';
-            d3.select("#heatmap-svg").selectAll("*").remove();
-            legendSvgContainer.html(''); 
-
+            
             try {
                 const data = d3.csvParse(csvDataString);
-                
                 allRawData = data.map(d => {
                     const startTime = d.STARTTIME;
                     let parsedDate = null, parsedHour = null, parsedMinute = null, timeSlot = null;
-
                     if (startTime) {
                         const dateTimeParts = startTime.split(' ');
                         if (dateTimeParts.length === 2) {
@@ -211,36 +243,22 @@
                     }
                     return {
                         id: d.ID, date: parsedDate, time_slot: timeSlot, robotName: d.ROBOTNAME,
-                        kcuwait: +d.KCUWAIT || 0,
+                        kcuPoints: +d.KCUPOINTS || 0,
                         executionTime: +d.EXECUTIONTIME || 0,
+                        originalKcuWait: +d.KCUWAIT || 0,
                         queueTime: +d.QUEUETIME || 0 
                     };
                 }).filter(d => d.date && d.time_slot !== null);
 
                 if (allRawData.length === 0) {
                     document.getElementById('loading').style.display = 'none';
-                    d3.select("#heatmap-svg").append("text").attr("x", dynamicSvgWidth/2).attr("y", 50).attr("text-anchor", "middle").text("有効なデータが見つかりませんでした。");
+                    alert("有効なデータが見つかりませんでした。CSVの内容を確認してください。");
                     return;
                 }
                 
                 const selectElement = document.getElementById('robot-select');
-                while (selectElement.childNodes.length > 1) {
-                     if(selectElement.lastChild.value !== "all") { selectElement.removeChild(selectElement.lastChild); } 
-                     else if (selectElement.childNodes.length === 1 && selectElement.firstChild.value === "all") { break; } 
-                     else {
-                         let allOptionFound = false;
-                         for(let i=0; i<selectElement.childNodes.length; i++){ if(selectElement.childNodes[i].value === "all") allOptionFound = true; }
-                         if(!allOptionFound && selectElement.firstChild){ 
-                            const defaultOption = document.createElement('option');
-                            defaultOption.value = "all";
-                            defaultOption.textContent = "全ロボット (スロット内集計)";
-                            selectElement.insertBefore(defaultOption, selectElement.firstChild);
-                         }
-                         break; 
-                     }
-                }
+                currentSelectedRobot = selectElement.value || "all"; 
                 selectElement.options[0].textContent = "全ロボット (スロット内集計)";
-
                 robotNamesList = ["all", ...new Set(allRawData.map(d => d.robotName).filter(name => name).sort())];
                 
                 const selectD3 = d3.select("#robot-select");
@@ -249,87 +267,142 @@
                     .data(robotNamesList.filter(name => name !== "all"))
                     .enter().append("option")
                     .attr("class", "robot-specific").attr("value", d => d).text(d => d);
+                selectElement.value = currentSelectedRobot; 
 
-                selectD3.on("change", function() { drawHeatmap(this.value); });
+                currentKcuSimulationCount = +document.getElementById('kcu-slider').value; 
+                document.getElementById('simulated-kcu-count-title').textContent = currentKcuSimulationCount;
 
-                drawHeatmap(selectElement.value || "all"); 
+                drawAllHeatmaps();
                 document.getElementById('loading').style.display = 'none';
 
             } catch (error) {
                 console.error('CSVデータのパースエラー:', error);
                 document.getElementById('loading').style.display = 'none';
-                d3.select("#heatmap-svg").append("text").attr("x", dynamicSvgWidth/2).attr("y", 50).attr("text-anchor", "middle").text(`CSVパースエラー: ${error.message}`);
+                alert(`CSVデータのパースに失敗しました: ${error.message}。データの形式を確認してください。`);
             }
         });
 
-        function drawHeatmap(selectedRobot) {
-            const currentSvg = d3.select("#heatmap-svg");
-            currentSvg.selectAll("*").remove();
-            legendSvgContainer.html(''); 
+        const kcuSlider = document.getElementById('kcu-slider');
+        const kcuValueDisplay = document.getElementById('kcu-value-display');
+        kcuSlider.addEventListener('input', function() {
+            currentKcuSimulationCount = +this.value;
+            kcuValueDisplay.textContent = `${currentKcuSimulationCount} KCU`;
+            document.getElementById('simulated-kcu-count-title').textContent = currentKcuSimulationCount;
+        });
+        kcuSlider.addEventListener('change', function() {
+            if (allRawData.length > 0) {
+                 document.getElementById('loading').style.display = 'block';
+                 setTimeout(() => {
+                    drawSimulatedHeatmap(); 
+                    document.getElementById('loading').style.display = 'none';
+                 }, 10);
+            }
+        });
+        
+        document.getElementById('robot-select').addEventListener('change', function() {
+            currentSelectedRobot = this.value;
+            if (allRawData.length > 0) {
+                document.getElementById('loading').style.display = 'block';
+                setTimeout(() => {
+                    drawAllHeatmaps(); 
+                    document.getElementById('loading').style.display = 'none';
+                }, 10);
+            }
+        });
 
-            let dataForHeatmap;
-            if (selectedRobot === "all") {
-                dataForHeatmap = allRawData;
+        function drawAllHeatmaps() {
+            drawActualHeatmap();
+            drawSimulatedHeatmap();
+            drawLegend(); 
+        }
+
+        function prepareHeatmapData(isSimulation) {
+            let dataForSelectedRobot;
+            if (currentSelectedRobot === "all") {
+                dataForSelectedRobot = allRawData;
             } else {
-                dataForHeatmap = allRawData.filter(d => d.robotName === selectedRobot);
+                dataForSelectedRobot = allRawData.filter(d => d.robotName === currentSelectedRobot);
             }
 
-            const groupedByDateTimeSlot = d3.group(dataForHeatmap, d => d.date, d => d.time_slot);
-            
+            const groupedByDateTimeSlot = d3.group(dataForSelectedRobot, d => d.date, d => d.time_slot);
             let heatmapCellData = [];
+
             groupedByDateTimeSlot.forEach((timeSlotMap, date) => {
                 timeSlotMap.forEach((valuesInCell, time_slot) => {
                     const executionCount = valuesInCell.length;
-                    const totalKcuwait = d3.sum(valuesInCell, v => v.kcuwait);
-                    const totalExecutionTime = d3.sum(valuesInCell, v => v.executionTime);
-                    
+                    let totalKcuWaitToUse = 0;
+                    let totalExecutionTimeToUse = 0; 
+                    let totalOriginalKcuWaitInCell = 0; 
+
+                    valuesInCell.forEach(record => {
+                        totalExecutionTimeToUse += record.executionTime; 
+                        totalOriginalKcuWaitInCell += record.originalKcuWait;
+
+                        if (isSimulation) {
+                            if (currentKcuSimulationCount === 1 && record.originalKcuWait !== undefined) { 
+                                // ★★★ 修正点: 1KCUシミュレーション時は元のKCUWAITを使用 ★★★
+                                totalKcuWaitToUse += record.originalKcuWait;
+                            } else {
+                                const kcuCapacityPerSecond = currentKcuSimulationCount * KCU_POINTS_PER_KCU_PER_SECOND;
+                                let simulatedProcessingTimeMs = 0;
+                                if (kcuCapacityPerSecond > 0) {
+                                    simulatedProcessingTimeMs = (record.kcuPoints / kcuCapacityPerSecond) * 1000;
+                                } else if (record.kcuPoints > 0) {
+                                    simulatedProcessingTimeMs = Infinity;
+                                }
+                                const simulatedKcuWaitMs = Math.max(0, simulatedProcessingTimeMs - record.executionTime);
+                                totalKcuWaitToUse += simulatedKcuWaitMs;
+                            }
+                        } else { 
+                            totalKcuWaitToUse += record.originalKcuWait; 
+                        }
+                    });
+
                     let kcuWaitRate = NaN;
-                    if ((totalExecutionTime + totalKcuwait) > 0) {
-                        kcuWaitRate = totalKcuwait / (totalExecutionTime + totalKcuwait);
-                    } else if (totalKcuwait > 0 && (totalExecutionTime + totalKcuwait) === 0) { 
-                        // 実行時間0でKCUWAITのみ発生は考えにくいが、念のためInfinity扱い
+                    const totalEffectiveTime = totalExecutionTimeToUse + totalKcuWaitToUse;
+                    if (totalEffectiveTime > 0) {
+                        kcuWaitRate = totalKcuWaitToUse / totalEffectiveTime;
+                    } else if (totalKcuWaitToUse > 0 && totalEffectiveTime === 0) {
                         kcuWaitRate = Infinity;
-                    } else if (totalKcuwait === 0 && (totalExecutionTime + totalKcuwait) === 0 && executionCount > 0) {
-                        // KCUWAITも実行時間も0だが実行記録がある場合はレート0
+                    } else if (totalKcuWaitToUse === 0 && totalEffectiveTime === 0 && executionCount > 0) {
                         kcuWaitRate = 0;
                     }
-
-
-                    const categoryLevel = getKcuWaitRateCategoryLevel(kcuWaitRate);
                     
+                    const categoryLevel = getKcuWaitRateCategoryLevel(kcuWaitRate);
                     const queueTimeRecords = valuesInCell.filter(v => v.queueTime > 0);
-                    const hasQueueTime = queueTimeRecords.length > 0;
-                    const totalQueueTime = d3.sum(queueTimeRecords, v => v.queueTime);
                     
                     heatmapCellData.push({
-                        date: date, 
-                        time_slot: time_slot, 
-                        execution_count: executionCount,
-                        kcu_wait_rate: kcuWaitRate,
-                        category_level: categoryLevel,
+                        date: date, time_slot: time_slot, execution_count: executionCount,
+                        kcu_wait_rate: kcuWaitRate, category_level: categoryLevel,
                         category_name: getKcuWaitRateCategoryName(categoryLevel),
-                        total_kcuwait_in_cell: totalKcuwait,
-                        total_execution_time_in_cell: totalExecutionTime,
-                        has_queue_time: hasQueueTime,
+                        total_kcuwait_in_cell: totalKcuWaitToUse, 
+                        total_execution_time_in_cell: totalExecutionTimeToUse,
+                        total_original_kcuwait_in_cell: totalOriginalKcuWaitInCell, 
+                        has_queue_time: queueTimeRecords.length > 0,
                         queue_time_record_count: queueTimeRecords.length,
-                        total_queue_time_ms: totalQueueTime
+                        total_queue_time_ms: d3.sum(queueTimeRecords, v => v.queueTime)
                     });
                 });
             });
-            
+            return heatmapCellData;
+        }
+
+        function renderSingleHeatmap(svgId, heatmapCellData, isSimulation) {
+            const currentSvg = d3.select(`#${svgId}`);
+            currentSvg.selectAll("*").remove();
+
             if (heatmapCellData.length === 0) {
-                 currentSvg.append("text").attr("x", dynamicSvgWidth / 2).attr("y", 50).attr("text-anchor", "middle")
-                    .text(selectedRobot === "all" ? "対象期間に実行記録がありません。" : `ロボット「${selectedRobot}」の実行記録がありません。`);
+                 currentSvg.append("text").attr("x", dynamicSvgWidth / 2).attr("y", 30).attr("text-anchor", "middle") 
+                    .text(currentSelectedRobot === "all" ? "対象期間に実行記録がありません。" : `ロボット「${currentSelectedRobot}」の実行記録がありません。`);
                 return;
             }
 
             const dates = [...new Set(heatmapCellData.map(d => d.date))].sort((a,b) => new Date(a) - new Date(b));
-            const timeSlots = []; 
-            for (let h = 0; h < 24; h++) {
-                for (let m = 0; m < 60; m += 5) {
-                    timeSlots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-                }
-            }
+            const timeSlots = Array.from({length: 24 * (60/5)}, (_, i) => {
+                const h = Math.floor(i / (60/5));
+                const m = (i % (60/5)) * 5;
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            });
 
             const cellHeight = 30;
             const dynamicSvgHeight = cellHeight * dates.length + margin.top + margin.bottom;
@@ -358,13 +431,7 @@
                 .data(heatmapCellData, d => `${d.date}:${d.time_slot}`)
                 .enter()
                 .append("rect")
-                .attr("class", d => {
-                    let classes = "heatmap-cell";
-                    if (d.execution_count >= CONCURRENCY_THRESHOLD) {
-                        classes += " cell-high-concurrency";
-                    }
-                    return classes;
-                })
+                .attr("class", d => d.execution_count >= CONCURRENCY_THRESHOLD ? "heatmap-cell cell-high-concurrency" : "heatmap-cell")
                 .attr("x", d => xScale(d.time_slot))
                 .attr("y", d => yScale(d.date))
                 .attr("width", xScale.bandwidth())
@@ -378,30 +445,34 @@
                         queueInfo += `<strong>　QUEUETIME発生レコード数:</strong> ${d.queue_time_record_count}<br/>
                                       <strong>　総QUEUETIME:</strong> ${d.total_queue_time_ms.toLocaleString()} ms<br/>`;
                     }
+                    
+                    let kcuWaitRateDisplay = isNaN(d.kcu_wait_rate) ? "N/A" : (d.kcu_wait_rate * 100).toFixed(1) + "%";
+                    let kcuWaitMsDisplay = d.total_kcuwait_in_cell.toLocaleString();
+                    let titlePrefix = isSimulation ? `シミュレーション (${currentKcuSimulationCount} KCU)<br/>` : "現状<br/>";
 
                     tooltip.html(`
+                        ${titlePrefix}
                         <strong>日付:</strong> ${d.date}<br/>
                         <strong>時間帯:</strong> ${d.time_slot} - ${timeSlotEnd}<br/>
-                        <strong>ロボット:</strong> ${selectedRobot === "all" ? "全ロボット" : selectedRobot}<br/>
-                        <strong>KCU Wait率:</strong> ${isNaN(d.kcu_wait_rate) ? "N/A" : (d.kcu_wait_rate * 100).toFixed(1) + "%"}<br/>
+                        <strong>ロボット:</strong> ${currentSelectedRobot === "all" ? "全ロボット" : currentSelectedRobot}<br/>
+                        <strong>KCU Wait率:</strong> ${kcuWaitRateDisplay}<br/>
                         <strong>分類 (KCU Wait率):</strong> ${d.category_name}<br/>
-                        <strong>総KCUWAIT (スロット内):</strong> ${d.total_kcuwait_in_cell.toLocaleString()} ms<br/>
-                        <strong>総実行時間 (スロット内):</strong> ${d.total_execution_time_in_cell.toLocaleString()} ms<br/>
+                        <strong>総KCUWAIT:</strong> ${kcuWaitMsDisplay} ms<br/>
+                        ${isSimulation && currentKcuSimulationCount > 1 ? `<strong>(参考) 元の総KCUWAIT:</strong> ${d.total_original_kcuwait_in_cell.toLocaleString()} ms<br/>` : ''}
+                        <strong>総実行時間:</strong> ${d.total_execution_time_in_cell.toLocaleString()} ms<br/>
                         <strong>同時実行レコード数:</strong> ${d.execution_count}<br/>
                         ${queueInfo}
                     `)
                     .style("left", (event.pageX + 15) + "px")
                     .style("top", (event.pageY - 28) + "px");
                     
-                    // マウスオーバー時の枠線スタイル
                     d3.select(this)
-                        .style("stroke", "black")
-                        .style("stroke-width", "1px")
+                        .style("stroke", d.execution_count >= CONCURRENCY_THRESHOLD ? "#059669" : "black")
+                        .style("stroke-width", d.execution_count >= CONCURRENCY_THRESHOLD ? "2.5px" : "1px")
                         .style("stroke-opacity", 1);
                 })
                 .on("mouseout", function(event, d) {
                     tooltip.transition().duration(500).style("opacity", 0);
-                    // 元の枠線スタイルに戻す (同時実行数が多い場合の枠線)
                     if (d.execution_count >= CONCURRENCY_THRESHOLD) {
                          d3.select(this)
                             .style("stroke", "#06b6d4")
@@ -411,7 +482,21 @@
                         d3.select(this).style("stroke", "none");
                     }
                 });
-            
+        }
+
+        function drawActualHeatmap() {
+            const actualData = prepareHeatmapData(false);
+            renderSingleHeatmap("heatmap-svg-actual", actualData, false);
+        }
+
+        function drawSimulatedHeatmap() {
+            const simulatedData = prepareHeatmapData(true);
+            renderSingleHeatmap("heatmap-svg-simulated", simulatedData, true);
+            document.getElementById('simulated-kcu-count-title').textContent = currentKcuSimulationCount;
+        }
+        
+        function drawLegend() {
+            legendSvgContainer.html(''); 
             const legendData = [
                 { level: 1, text: "良好 (KCU Wait率 0-5%)" },
                 { level: 2, text: "注意 (KCU Wait率 >5-15%)" },
@@ -419,10 +504,9 @@
             ];
             const legendConcurrency = { strokeColor: "#06b6d4", strokeWidth: "2.5px", strokeDasharray: "3 1", text: `同時実行 ${CONCURRENCY_THRESHOLD}回以上 (枠線)` };
 
-
             legendSvgContainer.append("div").attr("class", "legend-title").text("凡例");
             const legendSvgInstance = legendSvgContainer.append("svg")
-                .attr("height", (20 + 8) * (legendData.length + 2)) // 凡例間のスペースを少し広げる
+                .attr("height", (20 + 8) * (legendData.length + 2))
                 .attr("width", 400); 
             
             const legendItems = legendSvgInstance.selectAll(".legend-item-color")
@@ -445,6 +529,7 @@
             concurrencyLegendItem.append("text").attr("x", 20 + 5).attr("y", 10).text(legendConcurrency.text)
                 .attr("class", "legend-item-text").attr("dominant-baseline", "middle");
         }
+
     </script>
 </body>
 </html>
